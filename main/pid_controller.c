@@ -1,45 +1,62 @@
 /*
 Creates a PID control loop that runs a in a task.
 Gains, initializing, etc. can be controlled by other taskes.
-
-
 */
 
-#include "pid_controller.h"
-
+#include "freertos/FreeRTOS.h"
 #include <float.h>
 #include <freertos/event_groups.h>
 #include <freertos/queue.h>
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 #include <freertos/timers.h>
+#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 
 #include "esp_log.h"
 #include "esp_system.h"
-#include "freertos/FreeRTOS.h"
 
-// Dummy pointer. Value is meaningless
-bool dummy_ptr_bool_val = false;
-bool *dummy_ptr_bool = &dummy_ptr_bool_val;
+#include "pid_controller.h"
 
 void
-app_main (void)
+app_main ()
 {
+  false;
   // struct pid_controller_struct pid
   //    = create_pid_control_struct (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, true);
   // pid.advanced.windup_control_mode;
 }
 
-struct pid_controller_struct
+pid_c_advanced pid_advanced_default = {
+  .sample_period = PID_SAMPLE_PERIOD,
+  .windup_control_mode = 0,
+  .windup_pos_limit = 0.0,
+  .windup_neg_limit = 0.0,
+  .disable_pos_windup = false,
+  .disable_neg_windup = false,
+};
+
+pid_c_limits pid_limits_default = {
+  .enable_cv_limits = false,
+  .enable_cv_roc_limits = false,
+  .enable_sp_limits = false,
+  .enable_sp_roc_limits = false,
+  .cv_limit_hi = FLT_MAX,
+  .cv_limit_lo = FLT_MIN,
+  .pv_limit_hi = FLT_MAX,
+  .pv_limit_lo = FLT_MIN,
+  .sp_limit_hi = FLT_MAX,
+  .sp_limit_lo = FLT_MIN,
+};
+
+pid_controller_struct
 create_pid_control_struct (float *pv, float sp, float *cv, float kp, float ki,
                            float kd, bool control_action)
 {
-  struct pid_controller_struct pid = {
+  pid_controller_struct pid = {
       .pv = pv,
       .sp = sp,
       .cv = cv,
@@ -50,20 +67,6 @@ create_pid_control_struct (float *pv, float sp, float *cv, float kp, float ki,
 
       .control_action = control_action,
 
-      .limits =
-          {
-              .enable_cv_limits = false,
-              .enable_cv_roc_limits = false,
-              .enable_sp_limits = false,
-              .enable_sp_roc_limits = false,
-              .cv_limit_hi = FLT_MAX,
-              .cv_limit_lo = FLT_MIN,
-              .pv_limit_hi = FLT_MAX,
-              .pv_limit_lo = FLT_MIN,
-              .sp_limit_hi = FLT_MAX,
-              .sp_limit_lo = FLT_MIN,
-          },
-
       .control =
           {
               .init = true,
@@ -71,37 +74,33 @@ create_pid_control_struct (float *pv, float sp, float *cv, float kp, float ki,
               .mutex = xSemaphoreCreateMutex(),
           },
 
-      .advanced =
-          {
-              .sample_period = PID_SAMPLE_PERIOD,
-              .windup_control_mode = 0,
-              .windup_pos_limit = 0.0,
-              .windup_neg_limit = 0.0,
-              .disable_pos_windup = false,
-              .disable_neg_windup = false,
-          },
+      .advanced = pid_advanced_default,
+      .limits = pid_limits_default,
       // everything else set when PID task is started. Undefined behavior occurs
       // before then.
   };
 
   return pid;
-};
+}
 
 // PID Controller
 void
-pid_controller (struct pid_controller_struct *pid)
+pid_controller (pid_controller_struct *pid)
 {
   bool init;
-  struct pid_controller_struct pid_wrk;
+  pid_controller_struct pid_wrk;
 
   float sp_wrk;
   float sp_wrk_old = 0.0;
 
-  float integral;
+  float integral = 0.0;
   float last_err;
 
   float cv_wrk;
-  float cv_roc_ms;
+
+  // Dummy pointer. Value is meaningless
+  bool dummy_ptr_bool_val = false;
+  bool *dummy_ptr_bool = &dummy_ptr_bool_val;
 
   TickType_t xLastWakeTime = xTaskGetTickCount ();
 
@@ -118,8 +117,8 @@ pid_controller (struct pid_controller_struct *pid)
             {
               pid_wrk = *pid;
               xSemaphoreGive (pid->control.mutex);
-            };
-        };
+            }
+        }
 
       // Delay to get sample period
       xTaskDelayUntil (&xLastWakeTime,
@@ -127,7 +126,7 @@ pid_controller (struct pid_controller_struct *pid)
       xLastWakeTime = xTaskGetTickCount ();
 
       // Check for NaN errors. Init if they exist to avoid undefined behavior
-      pid->status.pv_NaN = isnan (pid->pv) != 0 || isinf (pid->pv) != 0;
+      pid->status.pv_NaN = isnan (*pid->pv) != 0 || isinf (*pid->pv) != 0;
       pid->status.sp_NaN = isnan (pid->sp) != 0 || isinf (pid->sp) != 0;
 
       // Determine when to init
@@ -155,7 +154,7 @@ pid_controller (struct pid_controller_struct *pid)
       // Process the PV. Sets status only
       hi_lo_limits_w_status (
           *pid->pv, pid_wrk.limits.pv_limit_hi, pid_wrk.limits.pv_limit_lo,
-          false, pid->status.pv_hi, pid->status.pv_lo, dummy_ptr_bool);
+          false, &pid->status.pv_hi, &pid->status.pv_lo, dummy_ptr_bool);
 
       // Calculate the error
       last_err = pid->err;
@@ -187,14 +186,14 @@ pid_controller (struct pid_controller_struct *pid)
           &pid->status.cv_roc_lo, &pid->status.cv_roc_limited);
 
       // One final check of NaN/inf before setting cv
-      pid->status.cv_NaN = isnan (pid->cv) != 0 || isinf (pid->cv) != 0;
+      pid->status.cv_NaN = isnan (*pid->cv) != 0 || isinf (*pid->cv) != 0;
       *pid->cv = pid->status.cv_NaN ? pid_wrk.control.init_value : cv_wrk;
-    };
-};
+    }
+}
 
 // Calculate the integral component
 float
-calc_i_out (struct _pid_c_advanced *adv, float err, float integral)
+calc_i_out (pid_c_advanced *adv, float err, float integral)
 {
   bool at_pos_limit = err > adv->windup_pos_limit || adv->disable_pos_windup;
 
@@ -219,10 +218,10 @@ calc_i_out (struct _pid_c_advanced *adv, float err, float integral)
 
           return integral;
         }
-    };
+    }
 
   return integral + err;
-};
+}
 
 // Clamps value to hi and lo limits if enabled, and sets alarm statuses
 float
@@ -230,7 +229,7 @@ hi_lo_limits_w_status (float value, float hi, float lo, bool limit_en,
                        bool *hi_status, bool *lo_status, bool *limited_status)
 {
   // Value is within limits
-  if (hi > value > lo)
+  if (hi > value && value > lo)
     {
       *hi_status = false;
       *lo_status = false;
@@ -252,9 +251,9 @@ hi_lo_limits_w_status (float value, float hi, float lo, bool limit_en,
       *hi_status = true;
       *lo_status = false;
       *limited_status = !limit_en;
-    };
+    }
   return value;
-};
+}
 
 // Clamps value to hi and lo limits based on period if enabled, and sets alarm
 // statuses
@@ -267,7 +266,7 @@ roc_limits_w_status (float new, float old, uint16_t period_ms, float hi_roc,
   int roc_perc_s = ((new - old) / old) * 100.0 * (1000.0 / period_ms);
 
   // Within limits
-  if (hi_roc > roc_perc_s > lo_roc)
+  if (hi_roc > roc_perc_s && roc_perc_s > lo_roc)
     {
       *hi_roc_status = false;
       *lo_roc_status = false;
@@ -293,6 +292,6 @@ roc_limits_w_status (float new, float old, uint16_t period_ms, float hi_roc,
       *hi_roc_status = true;
       *lo_roc_status = false;
       *roc_limited_status = !limit_roc_en;
-    };
+    }
   return new;
-};
+}

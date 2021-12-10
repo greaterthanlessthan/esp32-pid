@@ -1,13 +1,12 @@
-#ifndef SemaphoreHandle_t
-#include <freertos/semphr.h>
-#endif
+#include "freertos/semphr.h"
+#include <stdint.h>
 
 #define PID_SAMPLE_PERIOD 20
 
 /*
 PID Controller Advanced -- Variables for advanced PID control
 */
-struct _pid_c_advanced
+typedef struct pid_c_advanced
 {
   uint16_t sample_period; // PID control loop sample period in ms
 
@@ -35,12 +34,13 @@ struct _pid_c_advanced
   // Deadband
   // pv moving average
   // p and d setpoint weight
-};
+} pid_c_advanced;
+extern pid_c_advanced pid_advanced_default;
 
 /*
 PID Controller Limits
 */
-struct _pid_c_limits
+typedef struct pid_c_limits
 {
   bool enable_cv_limits; // when true, cv can't go above or below limits. In
                          // either case, alarm is set
@@ -65,25 +65,26 @@ struct _pid_c_limits
                              // alarms
   float sp_roc_limit_hi;     // in %/s
   float sp_roc_limit_lo;     // in %/s
-};
+} pid_c_limits;
+extern pid_c_limits pid_limits_default;
 
 /*
 PID controller controls -- Value intended to be changed during runtime for
 control of the PID controller
 */
-struct _pid_c_controls
+typedef struct pid_c_controls
 {
   SemaphoreHandle_t mutex; // mutex for changing values in the entire
                            // pid_controller structure
   bool init; // when true, cv is held to init_value and integrator is cleared
   float init_value; // when init is true, cv is held to this value
-};
+} pid_c_controls;
 
 /*
 PID controller alarms and status -- Bool values indicating aberration in PID
 controller
 */
-struct _pid_c_status
+typedef struct pid_c_status
 {
   bool pv_hi;  // pv is at hi level
   bool pv_lo;  // pv is at lo level
@@ -102,15 +103,15 @@ struct _pid_c_status
   bool sp_limited;     // sp is limited
   bool sp_NaN;         // sp is not a number
   bool sp_roc_limited; // sp is rate limited
-};
+} pid_c_status;
 
 /*
 PID controller full structure
 */
-struct pid_controller_struct
+typedef struct pid_controller_struct
 {
   // Inputs
-  float *pv; // Process Value
+  float *pv; // Process Value Pointer
   float sp;  // Setpoint
 
   float kp; // Proportional Gain
@@ -119,29 +120,26 @@ struct pid_controller_struct
 
   bool control_action; // true = positive, false = negative
 
-  struct _pid_c_advanced advanced;
-  struct _pid_c_limits limits;
-  struct _pid_c_controls control;
+  struct pid_c_advanced advanced;
+  struct pid_c_limits limits;
+  struct pid_c_controls control;
 
   // Outputs
-  float *cv; // Control Value
+  float *cv; // Control Value Pointer
   float err; // Calculated Error
 
   float p_out; // Proportional component of cv
   float i_out; // Integral component of cv
   float d_out; // derivative component of cv
 
-  struct _pid_c_status status;
-};
+  struct pid_c_status status;
+} pid_controller_struct;
 
 // create a default struct
-struct pid_controller_struct create_pid_control_struct (float *pv, float sp,
-                                                        float *cv, float kp,
-                                                        float ki, float kd,
-                                                        bool control_action);
-
-// calculate derivative component
-float calc_d_out (struct pid_controller_struct *pid);
+pid_controller_struct create_pid_control_struct (float *pv, float sp,
+                                                 float *cv, float kp, float ki,
+                                                 float kd,
+                                                 bool control_action);
 
 // PID Controller
 void pid_controller (struct pid_controller_struct *pid);
@@ -150,3 +148,15 @@ void pid_controller (struct pid_controller_struct *pid);
 void pid_controller_start (
 
 );
+
+// Calculate the integral component
+float calc_i_out (pid_c_advanced *adv, float err, float integral);
+
+float hi_lo_limits_w_status (float value, float hi, float lo, bool limit_en,
+                             bool *hi_status, bool *lo_status,
+                             bool *limited_status);
+
+float roc_limits_w_status (float new, float old, uint16_t period_ms,
+                           float hi_roc, float lo_roc, bool limit_roc_en,
+                           bool *hi_roc_status, bool *lo_roc_status,
+                           bool *roc_limited_status);
