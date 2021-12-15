@@ -1,7 +1,13 @@
-/*
-Creates a PID control loop that runs a in a task.
-Gains, initializing, etc. can be controlled by other taskes.
-*/
+/**
+ * @file pid_controller.c
+ * @author Bradley Knauf
+ * @brief PID Controller library with advanced functions
+ * @version 0.1
+ * @date 2021-12-14
+ *
+ * @copyright Copyright (c) 2021
+ *
+ */
 
 #include "freertos/FreeRTOS.h"
 #include <float.h>
@@ -16,8 +22,8 @@ Gains, initializing, etc. can be controlled by other taskes.
 #include <stdio.h>
 #include <stdlib.h>
 
-#include "esp_log.h"
-#include "esp_system.h"
+//#include "esp_log.h"
+//#include "esp_system.h"
 
 #include "pid_controller.h"
 
@@ -52,38 +58,42 @@ pid_c_limits pid_limits_default = {
   .sp_limit_lo = FLT_MIN,
 };
 
+pid_c_controls
+pid_control_default ()
+{
+  pid_c_controls controls = {
+    .init = true,
+    .init_value = 0.0,
+    .mutex = xSemaphoreCreateMutex (),
+  };
+  return controls;
+}
+
 pid_controller_struct
 create_pid_control_struct (float *pv, float sp, float *cv, float kp, float ki,
                            float kd, bool control_action)
 {
   pid_controller_struct pid = {
-      .pv = pv,
-      .sp = sp,
-      .cv = cv,
+    .pv = pv,
+    .sp = sp,
+    .cv = cv,
 
-      .kp = kp,
-      .ki = ki,
-      .kd = kd,
+    .kp = kp,
+    .ki = ki,
+    .kd = kd,
 
-      .control_action = control_action,
+    .control_action = control_action,
 
-      .control =
-          {
-              .init = true,
-              .init_value = 0.0,
-              .mutex = xSemaphoreCreateMutex(),
-          },
-
-      .advanced = pid_advanced_default,
-      .limits = pid_limits_default,
-      // everything else set when PID task is started. Undefined behavior occurs
-      // before then.
+    .control = pid_control_default (),
+    .advanced = pid_advanced_default,
+    .limits = pid_limits_default,
+    // everything else set when PID task is started. Undefined behavior occurs
+    // before then.
   };
 
   return pid;
 }
 
-// PID Controller
 void
 pid_controller (pid_controller_struct *pid)
 {
@@ -191,7 +201,6 @@ pid_controller (pid_controller_struct *pid)
     }
 }
 
-// Calculate the integral component
 float
 calc_i_out (pid_c_advanced *adv, float err, float integral)
 {
@@ -223,7 +232,6 @@ calc_i_out (pid_c_advanced *adv, float err, float integral)
   return integral + err;
 }
 
-// Clamps value to hi and lo limits if enabled, and sets alarm statuses
 float
 hi_lo_limits_w_status (float value, float hi, float lo, bool limit_en,
                        bool *hi_status, bool *lo_status, bool *limited_status)
@@ -255,8 +263,6 @@ hi_lo_limits_w_status (float value, float hi, float lo, bool limit_en,
   return value;
 }
 
-// Clamps value to hi and lo limits based on period if enabled, and sets alarm
-// statuses
 float
 roc_limits_w_status (float new, float old, uint16_t period_ms, float hi_roc,
                      float lo_roc, bool limit_roc_en, bool *hi_roc_status,
