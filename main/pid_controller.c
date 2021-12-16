@@ -9,13 +9,22 @@
  *
  */
 
+#if PY_TESTING
+#include <time.h>
+#define PY_TEST_TICKS clock_t xLastWakeTime = clock ()
+#else
 #include "freertos/FreeRTOS.h"
-#include <float.h>
 #include <freertos/event_groups.h>
 #include <freertos/queue.h>
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 #include <freertos/timers.h>
+
+#define PY_TEST_TICKS TickType_t xLastWakeTime = xTaskGetTickCount ()
+#endif
+#include "pid_controller.h"
+
+#include <float.h>
 #include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -25,10 +34,12 @@
 //#include "esp_log.h"
 //#include "esp_system.h"
 
-#include "pid_controller.h"
-
 void
+#if !PY_TESTING
 app_main ()
+#else
+main ()
+#endif
 {
   false;
   // struct pid_controller_struct pid
@@ -61,11 +72,15 @@ pid_c_limits pid_limits_default = {
 pid_c_controls
 pid_control_default ()
 {
-  pid_c_controls controls = {
-    .init = true,
-    .init_value = 0.0,
-    .mutex = xSemaphoreCreateMutex (),
-  };
+  pid_c_controls controls
+      = {.init = true,
+         .init_value = 0.0,
+#if !PY_TESTING
+         .mutex = xSemaphoreCreateMutex (),
+#else
+         .mutex = false,
+#endif
+        };
   return controls;
 }
 
@@ -112,13 +127,15 @@ pid_controller (pid_controller_struct *pid)
   bool dummy_ptr_bool_val = false;
   bool *dummy_ptr_bool = &dummy_ptr_bool_val;
 
-  TickType_t xLastWakeTime = xTaskGetTickCount ();
+  PY_TEST_TICKS;
 
   for (;;)
     {
-      // Create copy of pid struct. This allows values to be changed with mutex
-      // continue using pid for pv and outputs, as nothing else should modify
-      // those
+
+// Create copy of pid struct. This allows values to be changed with mutex
+// continue using pid for pv and outputs, as nothing else should modify
+// those
+#if !PY_TESTING
       if (pid->control.mutex)
         {
           if (xSemaphoreTake (pid->control.mutex,
@@ -134,6 +151,7 @@ pid_controller (pid_controller_struct *pid)
       xTaskDelayUntil (&xLastWakeTime,
                        pdMS_TO_TICKS (pid->advanced.sample_period));
       xLastWakeTime = xTaskGetTickCount ();
+#endif
 
       // Check for NaN errors. Init if they exist to avoid undefined behavior
       pid->status.pv_NaN = isnan (*pid->pv) != 0 || isinf (*pid->pv) != 0;
@@ -250,7 +268,7 @@ hi_lo_limits_w_status (float value, float hi, float lo, bool limit_en,
       *hi_status = false;
       *lo_status = true;
 
-      *limited_status = !limit_en;
+      *limited_status = limit_en;
     }
   // Value is hi
   else
@@ -258,7 +276,7 @@ hi_lo_limits_w_status (float value, float hi, float lo, bool limit_en,
       value = limit_en ? hi : value;
       *hi_status = true;
       *lo_status = false;
-      *limited_status = !limit_en;
+      *limited_status = limit_en;
     }
   return value;
 }
@@ -287,7 +305,7 @@ roc_limits_w_status (float new, float old, uint16_t period_ms, float hi_roc,
                 : new;
       *hi_roc_status = false;
       *lo_roc_status = true;
-      *roc_limited_status = !limit_roc_en;
+      *roc_limited_status = limit_roc_en;
     }
   // ROC is hi
   else
@@ -297,7 +315,7 @@ roc_limits_w_status (float new, float old, uint16_t period_ms, float hi_roc,
                 : new;
       *hi_roc_status = true;
       *lo_roc_status = false;
-      *roc_limited_status = !limit_roc_en;
+      *roc_limited_status = limit_roc_en;
     }
   return new;
 }

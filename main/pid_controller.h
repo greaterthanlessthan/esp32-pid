@@ -1,5 +1,18 @@
-#include "freertos/semphr.h"
+/**
+ * @brief allow Linux gcc to compile this library, allowing testing with
+ * Python
+ */
+#define PY_TESTING false
+
+#include <stdbool.h>
 #include <stdint.h>
+
+#if PY_TESTING
+#define PY_MUTEX_HANDLE bool mutex
+#else
+#include "freertos/semphr.h"
+#define PY_MUTEX_HANDLE SemaphoreHandle_t mutex
+#endif
 
 #define PID_SAMPLE_PERIOD 20
 
@@ -112,7 +125,8 @@ extern pid_c_limits pid_limits_default;
 typedef struct pid_c_controls
 {
   // mutex for changing values in pid_controller_struct
-  SemaphoreHandle_t mutex;
+  // This is a macro to support compiling with gcc for testing
+  PY_MUTEX_HANDLE;
   // when true, cv is held to init_value and integrator is cleared
   bool init;
   // when init is true, cv is held to this value
