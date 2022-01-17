@@ -4,17 +4,22 @@
  */
 #define PY_TESTING false
 
+#include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include <stdbool.h>
 #include <stdint.h>
 
-#if PY_TESTING
-#define PY_MUTEX_HANDLE bool mutex
-#else
-#include "freertos/semphr.h"
-#define PY_MUTEX_HANDLE SemaphoreHandle_t mutex
-#endif
-
 #define PID_SAMPLE_PERIOD 20
+
+enum integral_windup_mode
+{
+  NORMAL,
+  CLAMPED,
+  HELD,
+  CLEARED,
+  _CLAMPED_POS,
+  _CLAMPED_NEG,
+};
 
 /**
  * @brief Advanced features for PID controller
@@ -25,96 +30,78 @@
  * TODO: PV moving average?
  *
  */
-typedef struct pid_c_advanced
+struct pid_c_advanced
 {
   // PID control loop sample period in ms
   uint16_t sample_period;
 
   /**
    * @brief Windup control mode
-   * windup_control_mode = 0: limits not used
    *
-   * windup_control_mode = 1: when err is above limit, integrator cannot
-   * integrate in that direction
+   * NORMAL: limits not used
+   * CLAMPED: when err is above limit, behaves as though err was equal to limit
+   * HELD: when err is above limit, cannot integrate in that direction
+   * CLEARED: when err is above limit, integral is set to 0.0
    *
-   * windup_control_mode = 2: integrator behaves as though err was equal to
-   * limit when above/below limits
-   *
-   * windup_control_mode = 3: same as 1, but integrator value up to this point
-   * is also cleared
-   *
-   * disable_pos_windup and disable_pos_windup function in any mode
+   * dis_pos_wndup and dis_neg_wndup function in any mode
    */
-  uint8_t windup_control_mode;
+  enum integral_windup_mode wndup_mode;
 
   // When err is above this value, windup control takes effect
-  float windup_pos_limit;
+  float wndup_pos_lim;
   // When err is below this value, windup control takes effect.
-  float windup_neg_limit;
+  float wndup_neg_lim;
   // When set to true, integrator cannot integrate in the positive direction
-  bool disable_pos_windup;
+  bool dis_pos_wndup;
   // When set to true, integrator cannot integrate in the negative direction
-  bool disable_neg_windup;
-
-} pid_c_advanced;
-/**
- * @brief Default values of PID advanced controls. Override if used.
- * Recommended to use mutex when changing during runtime
- *
- */
-extern pid_c_advanced pid_advanced_default;
+  bool dis_neg_wndup;
+};
 
 /**
  * @brief Limits for PID controller
  *
  */
-typedef struct pid_c_limits
+struct pid_c_limits
 {
   // when true, cv can't go above or below limits. In either case, status is
   // set
   bool enable_cv_limits;
   // Maximum cv
-  float cv_limit_hi;
+  float cv_lim_hi;
   // Minimum cv
-  float cv_limit_lo;
+  float cv_lim_lo;
 
   // When true, cv becomes rate limited. In either case, status is set
   bool enable_cv_roc_limits;
   // Maximum rate of change in %/s
-  float cv_roc_limit_hi;
+  float cv_roc_lim_hi;
   // Minimum rate of change in %/s
-  float cv_roc_limit_lo;
+  float cv_roc_lim_lo;
 
   // Maximum pv. Sets status only
-  float pv_limit_hi;
+  float pv_lim_hi;
   // Minimum pv. Sets status only
-  float pv_limit_lo;
+  float pv_lim_lo;
   // Maximum rate of change in %/s. Sets status only
-  float pv_roc_limit_hi;
+  float pv_roc_lim_hi;
   // Minimum rate of change in %/s. Sets status only
-  float pv_roc_limit_lo;
+  float pv_roc_lim_lo;
 
   // when true, sp can't go above or below limits. In either case, status is
   // set
   bool enable_sp_limits;
   // Maximum sp
-  float sp_limit_hi;
+  float sp_lim_hi;
   // Minimum sp
-  float sp_limit_lo;
+  float sp_lim_lo;
 
   // Rate limits sp. Can help in windup control
   bool enable_sp_roc_limits;
   // Maximum rate of change in %/s
-  float sp_roc_limit_hi;
+  float sp_roc_lim_hi;
   // Minimum rate of change in %/s
-  float sp_roc_limit_lo;
-} pid_c_limits;
-/**
- * @brief Default values of PID limits. Override if used. Recommended to use
- * mutex when changing during runtime
- *
- */
-extern pid_c_limits pid_limits_default;
+  float sp_roc_lim_lo;
+};
 
 /**
  * @brief Control structure used for starting and stopping the PID controller
@@ -122,28 +109,22 @@ extern pid_c_limits pid_limits_default;
  * experienced
  *
  */
-typedef struct pid_c_controls
+struct pid_c_controls
 {
   // mutex for changing values in pid_controller_struct
   // This is a macro to support compiling with gcc for testing
-  PY_MUTEX_HANDLE;
+  SemaphoreHandle_t mutex;
   // when true, cv is held to init_value and integrator is cleared
   bool init;
   // when init is true, cv is held to this value
   float init_value;
-} pid_c_controls;
-/**
- * @brief Default values of PID Control. Function as calling a function to
- * create mutex
- *
- */
-pid_c_controls pid_control_default ();
+};
 
 /**
  * @brief PID controller status bools
  *
  */
-typedef struct pid_c_status
+struct pid_c_status
 {
   bool pv_hi;  // pv is at hi level
   bool pv_lo;  // pv is at lo level
@@ -162,7 +143,7 @@ typedef struct pid_c_status
   bool sp_limited;     // sp is limited
   bool sp_NaN;         // sp is not a number or is inf
   bool sp_roc_limited; // sp is rate limited
-} pid_c_status;
+};
 
 /**
  * @brief Structure used to
@@ -171,8 +152,8 @@ typedef struct pid_c_status
 typedef struct pid_controller_struct
 {
   // Inputs
-  float *pv; // Process Value Pointer
-  float sp;  // Setpoint
+  xQueueHandle pv; // Process Value Queue
+  float sp;        // Setpoint
 
   float kp; // Proportional Gain
   float ki; // Integral Gain
@@ -180,19 +161,19 @@ typedef struct pid_controller_struct
 
   bool control_action; // true = positive, false = negative
 
-  struct pid_c_advanced advanced;
-  struct pid_c_limits limits;
+  struct pid_c_advanced adv;
+  struct pid_c_limits lim;
   struct pid_c_controls control;
 
   // Outputs
-  float *cv; // Control Value Pointer
-  float err; // Calculated Error
+  xQueueHandle cv; // Control Value Queue
+  float err;       // Calculated Error
 
   float p_out; // Proportional component of cv
   float i_out; // Integral component of cv
   float d_out; // derivative component of cv
 
-  struct pid_c_status status;
+  struct pid_c_status sts;
 } pid_controller_struct;
 
 /**
@@ -233,32 +214,3 @@ void pid_controller (struct pid_controller_struct *pid);
  *
  */
 void pid_controller_start (struct pid_controller_struct *pid);
-
-/**
- * @brief Calculate the integral component
- *
- * @param adv Advanced control structure, used for windup
- * @param err The calculated error value
- * @param integral The previous integral value
- *
- */
-float calc_i_out (pid_c_advanced *adv, float err, float integral);
-
-/**
- * @brief Takes a float value, clamps it between two values if enabled, and
- * sets status bools
- *
- */
-float hi_lo_limits_w_status (float value, float hi, float lo, bool limit_en,
-                             bool *hi_status, bool *lo_status,
-                             bool *limited_status);
-
-/**
- * @brief Takes a float value, compares it to its old value and clamps it to an
- * acceptable rate of change, and sets status bools
- *
- */
-float roc_limits_w_status (float new, float old, uint16_t period_ms,
-                           float hi_roc, float lo_roc, bool limit_roc_en,
-                           bool *hi_roc_status, bool *lo_roc_status,
-                           bool *roc_limited_status);
