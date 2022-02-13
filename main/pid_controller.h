@@ -65,14 +65,14 @@ struct pid_c_limits
 {
   // when true, cv can't go above or below limits. In either case, status is
   // set
-  bool enable_cv_limits;
+  bool en_cv_lim;
   // Maximum cv
   float cv_lim_hi;
   // Minimum cv
   float cv_lim_lo;
 
   // When true, cv becomes rate limited. In either case, status is set
-  bool enable_cv_roc_limits;
+  bool en_cv_roc_lim;
   // Maximum rate of change in %/s
   float cv_roc_lim_hi;
   // Minimum rate of change in %/s
@@ -89,14 +89,14 @@ struct pid_c_limits
 
   // when true, sp can't go above or below limits. In either case, status is
   // set
-  bool enable_sp_limits;
+  bool en_sp_lim;
   // Maximum sp
   float sp_lim_hi;
   // Minimum sp
   float sp_lim_lo;
 
   // Rate limits sp. Can help in windup control
-  bool enable_sp_roc_limits;
+  bool en_sp_roc_lim;
   // Maximum rate of change in %/s
   float sp_roc_lim_hi;
   // Minimum rate of change in %/s
@@ -193,8 +193,7 @@ typedef struct pid_controller_struct
  * @return pid_controller_struct used for PID controller task
  *
  */
-pid_controller_struct create_pid_control_struct (float *pv, float sp,
-                                                 float *cv, float kp, float ki,
+pid_controller_struct create_pid_control_struct (float sp, float kp, float ki,
                                                  float kd,
                                                  bool control_action);
 

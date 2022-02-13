@@ -1,14 +1,3 @@
-/**
- * @file pid_controller.c
- * @author Bradley Knauf
- * @brief PID Controller library with advanced functions
- * @version 0.1
- * @date 2021-12-14
- *
- * @copyright Copyright (c) 2021
- *
- */
-
 #include "freertos/FreeRTOS.h"
 #include <freertos/event_groups.h>
 #include <freertos/queue.h>
@@ -43,10 +32,10 @@ static struct pid_c_advanced pid_advanced_default = {
 };
 
 static struct pid_c_limits pid_limits_default = {
-  .enable_cv_limits = false,
-  .enable_cv_roc_limits = false,
-  .enable_sp_limits = false,
-  .enable_sp_roc_limits = false,
+  .en_cv_lim = false,
+  .en_cv_roc_lim = false,
+  .en_sp_lim = false,
+  .en_sp_roc_lim = false,
   .cv_lim_hi = FLT_MAX,
   .cv_lim_lo = FLT_MIN,
   .pv_lim_hi = FLT_MAX,
@@ -84,7 +73,8 @@ calc_trapezoid_integral (float err, float err_prev, uint16_t period)
 }
 
 /**
- * @brief takes error, checks limits, and applies mode
+ * @brief takes error, checks limits, and returns the mode to use when
+ * integrating
  *
  * @param mode integral windup
  * @param err
@@ -123,12 +113,14 @@ integral_mode_used (enum integral_windup_mode mode, float err, float pos_limit,
     }
 
   // Limit triggers or disable commands can cause hold mode
-  if (mode == HELD)
+  if (disable_pos || disable_neg)
     {
-      if (at_pos_limit || disable_pos || at_neg_limit || disable_neg)
-        {
-          return HELD;
-        }
+      return HELD;
+    }
+
+  if (mode == HELD && (at_pos_limit || at_neg_limit))
+    {
+      return HELD;
     }
 
   // Handle fallthrough
@@ -175,33 +167,19 @@ calc_i_out (float err, float err_prev, uint16_t period, float integral,
  */
 static float
 hi_lo_limits_w_status (float value, float hi, float lo, bool limit_en,
-                       bool *hi_status, bool *lo_status, bool *limited_status)
+                       bool *hi_status, bool *lo_status, bool *lim_status)
 {
-  // Value is within limits
-  if (hi > value && value > lo)
-    {
-      *hi_status = false;
-      *lo_status = false;
-      *limited_status = false;
-    }
-  // Value is lo
-  else if (value <= lo)
-    {
-      value = limit_en ? lo : value;
-      *hi_status = false;
-      *lo_status = true;
+  *hi_status = value > hi;
+  *lo_status = value < lo;
+  *lim_status = (*hi_status || *lo_status) && limit_en;
 
-      *limited_status = limit_en;
-    }
-  // Value is hi
-  else
+  // Guard if not limited
+  if (!*lim_status)
     {
-      value = limit_en ? hi : value;
-      *hi_status = true;
-      *lo_status = false;
-      *limited_status = limit_en;
+      return value;
     }
-  return value;
+
+  return *hi_status ? hi : lo;
 }
 
 /**
@@ -211,41 +189,26 @@ hi_lo_limits_w_status (float value, float hi, float lo, bool limit_en,
  */
 static float
 roc_limits_w_status (float new, float old, uint16_t period_ms, float hi_roc,
-                     float lo_roc, bool limit_roc_en, bool *hi_roc_status,
-                     bool *lo_roc_status, bool *roc_limited_status)
+                     float lo_roc, bool lim_roc_en, bool *hi_roc_status,
+                     bool *lo_roc_status, bool *roc_lim_status)
 {
   // Calculate rate of change in %/s
-  int roc_perc_s = ((new - old) / old) * 100.0 * (1000.0 / period_ms);
+  float roc_perc_s = ((new - old) / old) * 100.0 * (1000.0 / period_ms);
 
-  // Within limits
-  if (hi_roc > roc_perc_s && roc_perc_s > lo_roc)
-    {
-      *hi_roc_status = false;
-      *lo_roc_status = false;
-      *roc_limited_status = false;
-    }
-  // ROC is lo
-  else if (roc_perc_s <= lo_roc)
-    {
+  // Set status
+  *hi_roc_status = roc_perc_s > hi_roc;
+  *lo_roc_status = roc_perc_s < lo_roc;
+  *roc_lim_status = (*hi_roc_status || *lo_roc_status) && lim_roc_en;
 
-      new = limit_roc_en
-                ? ((lo_roc * old) / (100.0 * (1000.0 / period_ms))) + old
-                : new;
-      *hi_roc_status = false;
-      *lo_roc_status = true;
-      *roc_limited_status = limit_roc_en;
-    }
-  // ROC is hi
-  else
+  // Guard if not limited
+  if (!*roc_lim_status)
     {
-      new = limit_roc_en
-                ? ((hi_roc * old) / (100.0 * (1000.0 / period_ms))) + old
-                : new;
-      *hi_roc_status = true;
-      *lo_roc_status = false;
-      *roc_limited_status = limit_roc_en;
+      return new;
     }
-  return new;
+
+  // Calculate limited value
+  roc_perc_s = *hi_roc_status ? hi_roc : lo_roc;
+  return (roc_perc_s * old) / (100.0 * (1000.0 / period_ms)) + old;
 }
 
 void
@@ -258,8 +221,8 @@ app_main ()
 }
 
 pid_controller_struct
-create_pid_control_struct (float *pv, float sp, float *cv, float kp, float ki,
-                           float kd, bool control_action)
+create_pid_control_struct (float sp, float kp, float ki, float kd,
+                           bool control_action)
 {
   pid_controller_struct pid = {
     .pv = xQueueCreate (1, sizeof (float)),
@@ -286,23 +249,23 @@ void
 pid_controller (pid_controller_struct *pid)
 {
   bool init;
-  pid_controller_struct pid_wrk;
+  pid_controller_struct pid_t; // pid temp
 
-  float sp_wrk;
-  float sp_wrk_old = 0.0;
+  float sp_t;            // sp temp
+  float last_sp_t = 0.0; // sp temp old
 
   float integral = 0.0;
   enum integral_windup_mode mode;
   float last_err;
 
-  float cv_wrk;
+  float cv_t;
 
   float pv;
   float cv;
 
   // Dummy pointer. Value is meaningless
   bool dummy_ptr_bool_val = false;
-  bool *dummy_ptr_bool = &dummy_ptr_bool_val;
+  bool *dum_ptr = &dummy_ptr_bool_val;
 
   TickType_t xLastWakeTime = xTaskGetTickCount ();
 
@@ -315,14 +278,14 @@ pid_controller (pid_controller_struct *pid)
         {
           if (xSemaphoreTake (pid->control.mutex, 0) == pdTRUE)
             {
-              pid_wrk = *pid;
+              pid_t = *pid;
               xSemaphoreGive (pid->control.mutex);
             }
         }
 
       // Delay to get sample period
       xTaskDelayUntil (&xLastWakeTime,
-                       pdMS_TO_TICKS (pid_wrk.adv.sample_period));
+                       pdMS_TO_TICKS (pid_t.adv.sample_period));
       xLastWakeTime = xTaskGetTickCount ();
 
       // Receive cv
@@ -333,7 +296,7 @@ pid_controller (pid_controller_struct *pid)
       pid->sts.sp_NaN = isnan (pid->sp) != 0 || isinf (pid->sp) != 0;
 
       // Determine when to init
-      init = pid->sts.pv_NaN || pid->sts.sp_NaN || pid_wrk.control.init;
+      init = pid->sts.pv_NaN || pid->sts.sp_NaN || pid_t.control.init;
 
       /* Process the setpoint
       Example:
@@ -341,61 +304,58 @@ pid_controller (pid_controller_struct *pid)
       200, and is then set to 104. sp_wrk_old is set to 104
       Second sample: 104 to 200. sp_wrk is set to 200, then 108.16, then
       sp_wrk_old is set to 108.16 */
-      sp_wrk = hi_lo_limits_w_status (
-          pid_wrk.sp, pid_wrk.lim.sp_lim_hi, pid_wrk.lim.sp_lim_lo,
-          pid_wrk.lim.enable_sp_limits, &pid->sts.sp_hi, &pid->sts.sp_lo,
-          &pid->sts.sp_limited);
+      sp_t = hi_lo_limits_w_status (pid_t.sp, pid_t.lim.sp_lim_hi,
+                                    pid_t.lim.sp_lim_lo, pid_t.lim.en_sp_lim,
+                                    &pid->sts.sp_hi, &pid->sts.sp_lo,
+                                    &pid->sts.sp_limited);
 
-      sp_wrk = roc_limits_w_status (
-          sp_wrk, sp_wrk_old, pid_wrk.adv.sample_period,
-          pid_wrk.lim.sp_roc_lim_hi, pid_wrk.lim.sp_roc_lim_lo,
-          pid_wrk.lim.enable_sp_roc_limits && !init, dummy_ptr_bool,
-          dummy_ptr_bool, &pid->sts.sp_roc_limited);
+      sp_t = roc_limits_w_status (
+          sp_t, last_sp_t, pid_t.adv.sample_period, pid_t.lim.sp_roc_lim_hi,
+          pid_t.lim.sp_roc_lim_lo, pid_t.lim.en_sp_roc_lim && !init, dum_ptr,
+          dum_ptr, &pid->sts.sp_roc_limited);
 
-      sp_wrk_old = sp_wrk;
+      last_sp_t = sp_t;
 
       // Process the PV. Sets status only
-      hi_lo_limits_w_status (pv, pid_wrk.lim.pv_lim_hi, pid_wrk.lim.pv_lim_lo,
-                             false, &pid->sts.pv_hi, &pid->sts.pv_lo,
-                             dummy_ptr_bool);
+      hi_lo_limits_w_status (pv, pid_t.lim.pv_lim_hi, pid_t.lim.pv_lim_lo,
+                             false, &pid->sts.pv_hi, &pid->sts.pv_lo, dum_ptr);
 
       // Calculate the error
       last_err = pid->err;
-      pid->err = pid_wrk.control_action ? pv - sp_wrk : sp_wrk - pv;
+      pid->err = pid_t.control_action ? pv - sp_t : sp_t - pv;
 
       // Calculate the components
-      pid->p_out = pid->err * pid_wrk.kp;
+      pid->p_out = pid->err * pid_t.kp;
 
       mode = integral_mode_used (
-          pid_wrk.adv.wndup_mode, pid->err, pid_wrk.adv.wndup_pos_lim,
-          pid_wrk.adv.wndup_neg_lim, pid_wrk.adv.dis_pos_wndup,
-          pid_wrk.adv.dis_neg_wndup);
-      integral
-          = init ? 0.0
-                 : calc_i_out (pid->err, last_err, pid_wrk.adv.sample_period,
-                               integral, mode, pid_wrk.adv.wndup_pos_lim,
-                               pid_wrk.adv.wndup_neg_lim);
-      pid->i_out = integral * pid_wrk.ki;
+          pid_t.adv.wndup_mode, pid->err, pid_t.adv.wndup_pos_lim,
+          pid_t.adv.wndup_neg_lim, pid_t.adv.dis_pos_wndup,
+          pid_t.adv.dis_neg_wndup);
+      integral = init
+                     ? 0.0
+                     : calc_i_out (pid->err, last_err, pid_t.adv.sample_period,
+                                   integral, mode, pid_t.adv.wndup_pos_lim,
+                                   pid_t.adv.wndup_neg_lim);
+      pid->i_out = integral * pid_t.ki;
 
-      pid->d_out = (pid->err - last_err) * pid_wrk.kd;
+      pid->d_out = (pid->err - last_err) * pid_t.kd;
 
       // Calculate the total CV, then limit it
-      cv_wrk = init ? pid_wrk.control.init_value
-                    : pid->p_out + pid->i_out + pid->d_out;
+      cv_t = init ? pid_t.control.init_value
+                  : pid->p_out + pid->i_out + pid->d_out;
 
-      cv_wrk = hi_lo_limits_w_status (
-          cv_wrk, pid_wrk.lim.cv_lim_hi, pid_wrk.lim.cv_lim_lo,
-          pid_wrk.lim.enable_cv_limits, &pid->sts.cv_hi, &pid->sts.cv_lo,
-          &pid->sts.cv_limited);
+      cv_t = hi_lo_limits_w_status (
+          cv_t, pid_t.lim.cv_lim_hi, pid_t.lim.cv_lim_lo, pid_t.lim.en_cv_lim,
+          &pid->sts.cv_hi, &pid->sts.cv_lo, &pid->sts.cv_limited);
 
-      cv_wrk = roc_limits_w_status (
-          cv_wrk, cv, pid_wrk.adv.sample_period, pid_wrk.lim.cv_roc_lim_hi,
-          pid_wrk.lim.cv_roc_lim_lo, pid_wrk.lim.enable_cv_roc_limits,
+      cv_t = roc_limits_w_status (
+          cv_t, cv, pid_t.adv.sample_period, pid_t.lim.cv_roc_lim_hi,
+          pid_t.lim.cv_roc_lim_lo, pid_t.lim.en_cv_roc_lim,
           &pid->sts.cv_roc_hi, &pid->sts.cv_roc_lo, &pid->sts.cv_roc_limited);
 
       // One final check of NaN/inf before setting cv
-      pid->sts.cv_NaN = isnan (cv_wrk) != 0 || isinf (cv_wrk) != 0;
-      cv = pid->sts.cv_NaN ? pid_wrk.control.init_value : cv_wrk;
+      pid->sts.cv_NaN = isnan (cv_t) != 0 || isinf (cv_t) != 0;
+      cv = pid->sts.cv_NaN ? pid_t.control.init_value : cv_t;
 
       xQueueOverwrite (pid->cv, &cv);
     }
