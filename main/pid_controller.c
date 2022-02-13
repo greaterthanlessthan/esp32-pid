@@ -25,8 +25,8 @@
 static struct pid_c_advanced pid_advanced_default = {
   .sample_period = PID_SAMPLE_PERIOD,
   .wndup_mode = NORMAL,
-  .wndup_pos_lim = 0.0,
-  .wndup_neg_lim = 0.0,
+  .wndup_pos_lim = FLT_MAX,
+  .wndup_neg_lim = FLT_MIN,
   .dis_pos_wndup = false,
   .dis_neg_wndup = false,
 };
