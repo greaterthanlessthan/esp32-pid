@@ -33,7 +33,7 @@ enum integral_windup_mode
 struct pid_c_advanced
 {
   // PID control loop sample period in ms
-  uint16_t sample_period;
+  uint16_t period;
 
   /**
    * @brief Windup control mode
@@ -61,46 +61,28 @@ struct pid_c_advanced
  * @brief Limits for PID controller
  *
  */
+struct pid_limit
+{
+  // when true, can't go above or below limits. In either case, status is set
+  bool en_lim;
+  // Maximum
+  float lim_hi;
+  // Minimum
+  float lim_lo;
+
+  // When true, becomes rate limited. In either case, status is set
+  bool en_roc_lim;
+  // Maximum rate of change in %/s
+  float roc_lim_hi;
+  // Minimum rate of change in %/s
+  float roc_lim_lo;
+};
+
 struct pid_c_limits
 {
-  // when true, cv can't go above or below limits. In either case, status is
-  // set
-  bool en_cv_lim;
-  // Maximum cv
-  float cv_lim_hi;
-  // Minimum cv
-  float cv_lim_lo;
-
-  // When true, cv becomes rate limited. In either case, status is set
-  bool en_cv_roc_lim;
-  // Maximum rate of change in %/s
-  float cv_roc_lim_hi;
-  // Minimum rate of change in %/s
-  float cv_roc_lim_lo;
-
-  // Maximum pv. Sets status only
-  float pv_lim_hi;
-  // Minimum pv. Sets status only
-  float pv_lim_lo;
-  // Maximum rate of change in %/s. Sets status only
-  float pv_roc_lim_hi;
-  // Minimum rate of change in %/s. Sets status only
-  float pv_roc_lim_lo;
-
-  // when true, sp can't go above or below limits. In either case, status is
-  // set
-  bool en_sp_lim;
-  // Maximum sp
-  float sp_lim_hi;
-  // Minimum sp
-  float sp_lim_lo;
-
-  // Rate limits sp. Can help in windup control
-  bool en_sp_roc_lim;
-  // Maximum rate of change in %/s
-  float sp_roc_lim_hi;
-  // Minimum rate of change in %/s
-  float sp_roc_lim_lo;
+  struct pid_limit cv;
+  struct pid_limit pv;
+  struct pid_limit sp;
 };
 
 /**
@@ -124,25 +106,24 @@ struct pid_c_controls
  * @brief PID controller status bools
  *
  */
+struct pid_status
+{
+  bool hi;      // at hi level
+  bool lo;      // at lo level
+  bool limited; // limited
+
+  bool roc_hi;       // rate of change is hi
+  bool roc_lo;       // rate of change is lo
+  bool rate_limited; // rate limited
+
+  bool NaN; // not a number/infinity
+};
+
 struct pid_c_status
 {
-  bool pv_hi;  // pv is at hi level
-  bool pv_lo;  // pv is at lo level
-  bool pv_NaN; // pv input is not a number or is inf
-
-  bool cv_hi;          // cv is at hi level
-  bool cv_lo;          // cv is at lo level
-  bool cv_limited;     // cv is being limited
-  bool cv_NaN;         // cv is not a number or is inf
-  bool cv_roc_hi;      // cv rate of change is hi
-  bool cv_roc_lo;      // cv rate of change is lo
-  bool cv_roc_limited; // cv is rate limited
-
-  bool sp_hi;          // sp input is hi
-  bool sp_lo;          // sp input is lo
-  bool sp_limited;     // sp is limited
-  bool sp_NaN;         // sp is not a number or is inf
-  bool sp_roc_limited; // sp is rate limited
+  struct pid_status cv;
+  struct pid_status pv;
+  struct pid_status sp;
 };
 
 /**
